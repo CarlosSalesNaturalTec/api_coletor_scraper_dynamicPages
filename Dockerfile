@@ -56,8 +56,6 @@ COPY . .
 # Expõe a porta que a aplicação irá rodar
 EXPOSE 8000
 
-# Comando para iniciar a aplicação
-# Usa o Uvicorn para rodar a aplicação FastAPI
-# O host 0.0.0.0 é necessário para que a aplicação seja acessível de fora do container
-# O Gunicorn é recomendado para produção, mas Uvicorn é suficiente para muitos casos no Cloud Run.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# O Cloud Run define a variável de ambiente PORT, então usamos $PORT para que o Uvicorn
+# escute na porta correta dinamicamente. O uso de ${PORT} é uma forma segura de referenciar a variável.
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT}
