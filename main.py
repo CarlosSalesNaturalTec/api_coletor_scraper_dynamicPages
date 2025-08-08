@@ -3,11 +3,11 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from typing import List
 import traceback
+from datetime import datetime
 
 # Importações locais
 from firestore_client import get_firestore_client, log_error
 from scraper import scrape_url
-from firebase_admin import firestore
 
 # Inicializa a aplicação FastAPI
 app = FastAPI(
@@ -27,6 +27,15 @@ def run_scraping_jobs(urls_to_scrape: List[str]):
     print(f"Iniciando processo de scraping para {len(urls_to_scrape)} URLs.")
     db = get_firestore_client()
 
+    if not db:
+        # Se não houver conexão com o DB, não há como prosseguir.
+        # O erro já foi logado por get_firestore_client e log_error lida com isso.
+        log_error(
+            "Falha crítica em 'run_scraping_jobs': não foi possível conectar ao Firestore.",
+            {"urls_count": len(urls_to_scrape)}
+        )
+        return
+
     for url in urls_to_scrape:
         try:
             # 1. Tenta fazer o scraping
@@ -34,14 +43,11 @@ def run_scraping_jobs(urls_to_scrape: List[str]):
             
             # 2. Adiciona metadados do processo
             scraped_data['scraped_by'] = 'Playwright'
-            scraped_data['scraped_at'] = firestore.SERVER_TIMESTAMP
+            scraped_data['scraped_at'] = datetime.now()
             
             # 3. Salva o resultado na coleção 'scraped_articles'
             db.collection('scraped_articles').add(scraped_data)
             print(f"Dados de '{url}' salvos com sucesso em 'scraped_articles'.")
-
-            # Opcional: Remove a URL da lista de falhas se o scraping for bem-sucedido
-            # (Implementação depende da estrutura exata do seu DB)
 
         except Exception as e:
             # 4. Se ocorrer qualquer erro durante o scraping, registra a falha
@@ -52,33 +58,18 @@ def run_scraping_jobs(urls_to_scrape: List[str]):
                 "url": url,
                 "reason": str(e),
                 "scraped_by": "Playwright",
-                "failed_at": firestore.SERVER_TIMESTAMP
+                "failed_at": datetime.now()
             }
             
-            # Salva na coleção 'urls_com_falha'
-            db.collection('urls_com_falha').add(failure_log)
-            print(f"URL '{url}' salva em 'urls_com_falha'.")
+            # Salva na coleção 'urls_com_falha_playwright'
+            db.collection('urls_com_falha_playwright').add(failure_log)
+            print(f"URL '{url}' salva em 'urls_com_falha_playwright'.")
             
             # Salva o erro detalhado na coleção de erros de execução
             log_error(
                 error_message=f"Erro no scraping da URL: {url}",
                 details={"error": str(e), "traceback": traceback.format_exc()}
             )
-
-@app.on_event("startup")
-async def startup_event():
-    """
-    Na inicialização, garante a conexão com o Firestore.
-    """
-    try:
-        get_firestore_client()
-        print("Conexão com o Firestore verificada na inicialização.")
-    except Exception as e:
-        # Loga o erro fatal se não conseguir conectar ao DB na inicialização
-        log_error("Falha crítica na inicialização: não foi possível conectar ao Firestore.", 
-                  {"error": str(e)})
-        # Em um ambiente de produção, você pode querer que a aplicação pare aqui
-        # raise RuntimeError("Não foi possível conectar ao Firestore na inicialização.") from e
 
 @app.post("/scrape/start-jobs", status_code=202)
 async def start_scraping(background_tasks: BackgroundTasks):
@@ -87,8 +78,15 @@ async def start_scraping(background_tasks: BackgroundTasks):
     Ele busca as URLs da coleção 'urls_com_falha' e inicia o trabalho em background.
     """
     print("Recebida requisição para iniciar os trabalhos de scraping.")
+    db = get_firestore_client()
+    
+    if not db:
+        # Se não há DB, não podemos buscar as URLs.
+        log_error("Falha ao iniciar o processo de scraping: sem conexão com o banco de dados.", 
+                  {"traceback": traceback.format_exc()})
+        raise HTTPException(status_code=500, detail="Não foi possível conectar ao banco de dados.")
+
     try:
-        db = get_firestore_client()
         urls_ref = db.collection('urls_com_falha')
         
         # Limita a 100 URLs por execução para não sobrecarregar

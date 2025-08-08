@@ -1,36 +1,31 @@
-import firebase_admin
-from firebase_admin import credentials, firestore
-from dotenv import load_dotenv
 import os
-import threading
+from google.cloud import firestore
+from dotenv import load_dotenv
+from datetime import datetime
 
 # Carrega as variáveis de ambiente do arquivo .env
 load_dotenv()
 
-# Objeto para garantir que a inicialização do Firebase seja thread-safe
-app_lock = threading.Lock()
+_db = None
 
 def get_firestore_client():
     """
-    Inicializa o Firebase Admin SDK se ainda não foi inicializado e retorna 
-    uma instância do cliente Firestore.
-
-    A inicialização é feita de forma thread-safe para garantir que seja executada apenas uma vez.
+    Inicializa e retorna um cliente Firestore, garantindo uma instância única.
     """
-    with app_lock:
-        if not firebase_admin._apps:
-            try:
-                # Carrega as credenciais a partir da variável de ambiente
-                cred = credentials.ApplicationDefault()
-                firebase_admin.initialize_app(cred)
-                print("Firebase App inicializado com sucesso.")
-            except Exception as e:
-                print(f"Erro ao inicializar o Firebase App: {e}")
-                # Se a inicialização falhar, não podemos continuar.
-                # Lançar a exceção permite que o chamador saiba da falha.
-                raise
-    
-    return firestore.client()
+    global _db
+    if _db is None:
+        try:
+            # Verifica se a variável de ambiente essencial está configurada
+            if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+                raise ValueError("A variável de ambiente GOOGLE_APPLICATION_CREDENTIALS não está definida.")
+            
+            _db = firestore.Client()
+            print("Cliente Firestore inicializado com sucesso.")
+        except Exception as e:
+            print(f"Erro ao conectar ao Firestore: {e}")
+            # Retorna None para indicar que a conexão falhou
+            return None
+    return _db
 
 def log_error(error_message: str, details: dict = None):
     """
@@ -40,12 +35,17 @@ def log_error(error_message: str, details: dict = None):
         error_message (str): A mensagem de erro principal.
         details (dict, optional): Um dicionário com detalhes adicionais sobre o erro.
     """
+    db = get_firestore_client()
+    if not db:
+        print("Não foi possível salvar o log de erro: sem conexão com o banco de dados.")
+        print(f"Erro original que não pôde ser salvo: {error_message}")
+        return
+
     try:
-        db = get_firestore_client()
         error_log = {
             "message": error_message,
             "details": details or {},
-            "timestamp": firestore.SERVER_TIMESTAMP
+            "timestamp": datetime.now()
         }
         db.collection('erros_de_execucao').add(error_log)
         print(f"Erro '{error_message}' salvo no Firestore.")
@@ -58,8 +58,11 @@ def log_error(error_message: str, details: dict = None):
 if __name__ == '__main__':
     try:
         db_client = get_firestore_client()
-        print("Cliente Firestore obtido com sucesso.")
-        # Teste de log de erro
-        log_error("Teste de log de erro a partir do firestore_client.", {"component": "initialization"})
+        if db_client:
+            print("Cliente Firestore obtido com sucesso.")
+            # Teste de log de erro
+            log_error("Teste de log de erro a partir do firestore_client.", {"component": "initialization"})
+        else:
+            print("Falha ao obter o cliente Firestore.")
     except Exception as e:
         print(f"Falha ao obter o cliente Firestore ou logar erro: {e}")
